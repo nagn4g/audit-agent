@@ -22,8 +22,10 @@ Repo intake is a **heuristic screen, not a vulnerability finding**. Every triage
 ## Demo contracts
 
 All three are `^0.8.20`, use plain `assert()` and import **no `forge-std`**, so `forge test` runs
-offline with zero installs. Each PoC runs in isolation with `--match-test`, so one contract's
-result can never change another's verdict.
+offline with zero installs. Each PoC runs in isolation with `--force --match-contract
+--match-test`, so one contract's result can never change another's verdict — and no verdict
+can come from a stale compile (forge's incremental cache has been observed to skip
+recompilation after a PoC file is rewritten).
 
 ### 1. Reentrancy — `reentrancy`
 
@@ -144,12 +146,37 @@ npm run test:forge   # cd foundry && forge test
 Both endpoints share the same 16KB request body limit. Keys are kept in memory for the duration of
 one request only — never logged and never written to disk.
 
+## BYOK live test (25 Nov 2026)
+
+The LLM path was tested end-to-end with a real free-tier key — not just demo mode:
+
+- Model: `deepseek-v4.1-flash-free` (100milionseek) via a local LiteLLM proxy at
+  `http://localhost:4001/v1`, server started with `LLM_MODEL=seek-deepseek-v4.1-flash-free`.
+- Result: the LLM generated a PoC for **all three** demo contracts and every one passed
+  `forge test` (verdict `VULNERABILITY CONFIRMED`, `pocGenerator: "llm"`). The generated PoCs
+  differ from the recorded traces — they are genuinely model-written, not the fallback.
+- A bad key fails honestly: the pipeline falls back to the recorded trace and the report is
+  labelled `demo-fallback` (the UI shows "LLM failed — recorded trace used"), never a fake
+  LLM pass. A PoC that fails `forge test` yields `NOT CONFIRMED`.
+- Two things the test forced: (1) the target contract's source is included in the LLM prompt —
+  agentic-style models otherwise stop the turn with `tool_calls` trying to read the file
+  themselves, which returns an empty completion; (2) forge always runs with `--force` (see above).
+
 ## Screenshots
 
-_Screenshots will be added after the SLAY HACKS 2026 demo run._
+Final screenshots (Day 3, 25 Nov 2026, taken from the real local run — see
+`shots/` in the workspace; attach these to the Devpost submission):
 
-- Demo contract audit (triage → PoC → proof)
-- Repo intake triage report (10-gate table + top surface)
+- `shots/ui-day3-home-2026-11-25.png` — home: 3 demo contracts, BYOK panel, live log.
+- `shots/ui-day3-report-2026-11-25.png` — full audit report for reentrancy:
+  `VULNERABILITY CONFIRMED` (High), live log, PoC code, forge output `[PASS]`,
+  fix suggestion. Footer reads "Demo mode — recorded trace".
+- `shots/ui-day3-repo-2026-11-25.png` — repo intake triage of this repo:
+  6 files · 219 LOC · 9 contract names, 10-gate table, top surface.
+
+Note: the PNGs live in the workspace `shots/` directory, not in this repo —
+`push-files` only carries UTF-8 text, so binaries are uploaded to the repo (or
+attached to Devpost) via the browser.
 
 ## Limitations
 

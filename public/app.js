@@ -91,7 +91,7 @@ function renderContracts(contracts) {
 
     const tag = document.createElement('span');
     tag.className = `tag ${available ? 'available' : 'later'}`;
-    tag.textContent = available ? 'available' : 'Day 2';
+    tag.textContent = available ? 'available' : 'soon';
 
     node.append(title, meta, desc, tag);
     if (available) node.addEventListener('click', () => selectContract(contract.id));
