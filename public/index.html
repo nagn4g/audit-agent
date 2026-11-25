@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AuditAgent — triage to proof</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="masthead">
+        <div class="brand">
+          <span class="mark" aria-hidden="true">AA</span>
+          <div>
+            <h1>AuditAgent</h1>
+            <p class="tagline">Solidity triage, then a Foundry PoC that has to actually pass.</p>
+          </div>
+        </div>
+        <p class="ceiling">
+          Demo proves the triage &rarr; PoC &rarr; proof loop on known vulnerability classes.
+          It does not find novel 0-days in audited production code.
+        </p>
+      </header>
+
+      <main class="layout">
+        <section class="panel targets" aria-labelledby="targets-title">
+          <h2 id="targets-title">Target</h2>
+
+          <div class="contract-list" id="contract-list" role="radiogroup" aria-label="Demo contracts">
+            <p class="muted" id="contracts-loading">Loading demo contracts&hellip;</p>
+          </div>
+
+          <label class="field" for="repo-url">
+            <span class="field-label">Repository URL</span>
+            <input id="repo-url" type="url" placeholder="https://github.com/org/repo" disabled />
+            <span class="hint">repo intake — Day 2</span>
+          </label>
+
+          <fieldset class="byok">
+            <legend>Bring your own key <span class="optional">(optional)</span></legend>
+            <label class="field" for="llm-key">
+              <span class="field-label">LLM API key</span>
+              <input id="llm-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..." />
+              <span class="hint">Held in memory for one request. Never written to disk.</span>
+            </label>
+            <label class="field" for="llm-base">
+              <span class="field-label">Base URL</span>
+              <input id="llm-base" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com/v1" />
+            </label>
+            <p class="hint">Leave the key empty to run in demo mode with the recorded PoC trace.</p>
+          </fieldset>
+
+          <button id="run" class="run" type="button">Run Audit</button>
+          <p class="hint" id="run-hint">Pick a contract to enable the audit.</p>
+        </section>
+
+        <section class="panel live" aria-labelledby="live-title">
+          <h2 id="live-title">Live log</h2>
+          <ol class="log" id="log" aria-live="polite">
+            <li class="log-empty">No run yet.</li>
+          </ol>
+        </section>
+      </main>
+
+      <section class="panel report" id="report" aria-labelledby="report-title" hidden>
+        <div class="report-head">
+          <h2 id="report-title">Report</h2>
+          <div class="badges">
+            <span class="badge severity" id="severity-badge">Severity</span>
+            <span class="badge verdict" id="verdict-badge">Verdict</span>
+          </div>
+        </div>
+        <h3 class="finding-title" id="finding-title"></h3>
+
+        <div class="report-grid">
+          <div>
+            <h4>Impact</h4>
+            <p id="impact"></p>
+          </div>
+          <div>
+            <h4>Exploit path</h4>
+            <p id="exploit-path"></p>
+          </div>
+        </div>
+
+        <h4>PoC <span class="path-note" id="poc-path">foundry/test/ReentrancyPoC.t.sol</span></h4>
+        <pre class="code"><code id="poc-code"></code></pre>
+
+        <h4>Forge output</h4>
+        <pre class="code output"><code id="forge-output"></code></pre>
+
+        <h4>Fix</h4>
+        <p id="fix"></p>
+      </section>
+
+      <footer class="foot">
+        <span>Runs locally on 127.0.0.1. No telemetry, no stored keys.</span>
+        <span id="mode-note">Demo mode</span>
+      </footer>
+    </div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
