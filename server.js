@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const { DEMO_CONTRACTS, PipelineError, runAudit } = require('./lib/pipeline');
+const { parseGitHubUrl, cloneRepo, removeDir, mapContracts, screenRepo, topSurface } = require('./lib/repo');
 
 const HOST = '127.0.0.1';
 const PORT = 3000;
@@ -120,6 +121,86 @@ async function handleAudit(req, res) {
   }
 }
 
+async function handleRepoAudit(req, res) {
+  let payload;
+  try {
+    const raw = await readBody(req);
+    payload = raw ? JSON.parse(raw) : {};
+  } catch (err) {
+    return sendJson(res, 400, { error: `Invalid JSON body: ${err.message}` });
+  }
+
+  const repoUrl = typeof payload.repoUrl === 'string' ? payload.repoUrl.trim() : '';
+  // llmApiKey / llmBaseUrl are accepted for forward-compatibility but unused:
+  // repo triage is a deterministic heuristic screen and never calls the LLM.
+  if (!repoUrl) return sendJson(res, 400, { error: 'repoUrl is required' });
+
+  let parsed;
+  try {
+    parsed = parseGitHubUrl(repoUrl);
+  } catch (err) {
+    return sendJson(res, 400, { error: err.message });
+  }
+  const repoSlug = `${parsed.owner}/${parsed.repo}`;
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write(': stream open\n\n');
+
+  const controller = new AbortController();
+  res.on('close', () => controller.abort());
+
+  const emitStep = (message) => {
+    if (!res.writableEnded) sseWrite(res, 'step', { message });
+  };
+
+  const keepAlive = setInterval(() => {
+    if (!res.writableEnded) res.write(': keep-alive\n\n');
+  }, 15_000);
+
+  let cloneDir = null;
+  try {
+    emitStep(`Validating URL — ${repoSlug}`);
+    emitStep(`Cloning ${repoSlug} (shallow, depth 1)`);
+
+    cloneDir = await cloneRepo(parsed.owner, parsed.repo, { signal: controller.signal });
+
+    emitStep('Mapping contracts');
+    const map = await mapContracts(cloneDir);
+    emitStep(`Mapping contracts — ${map.totalFiles} file(s), ${map.totalLoc} LOC`);
+
+    emitStep('Running 10-gate screen');
+    const { gates, note } = screenRepo(map);
+    const surface = topSurface(map, gates);
+
+    const triage = {
+      repo: repoSlug,
+      files: map.files,
+      totalFiles: map.totalFiles,
+      totalLoc: map.totalLoc,
+      contractNames: map.contractNames,
+      truncated: map.truncated,
+      gates,
+      topSurface: surface,
+      note,
+    };
+    emitStep('Screen complete');
+    if (!res.writableEnded) sseWrite(res, 'triage', triage);
+  } catch (err) {
+    const message = err instanceof PipelineError ? err.message : `Repo audit error: ${err.message}`;
+    emitStep(`Error: ${message}`);
+    if (!res.writableEnded) sseWrite(res, 'error', { error: message });
+  } finally {
+    clearInterval(keepAlive);
+    await removeDir(cloneDir);
+    if (!res.writableEnded) res.end();
+  }
+}
+
 function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
 
@@ -128,6 +209,9 @@ function handleRequest(req, res) {
   }
   if (req.method === 'POST' && url.pathname === '/api/audit') {
     return handleAudit(req, res);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/repo-audit') {
+    return handleRepoAudit(req, res);
   }
   if (req.method === 'GET' && (url.pathname === '/' || /^\/[\w.-]+\.(html|js|css|svg|ico)$/.test(url.pathname))) {
     return serveStatic(res, url.pathname);

@@ -1,44 +1,114 @@
 # AuditAgent
 
-Local demo app for SLAY HACKS 2026: pick a seeded Solidity contract, watch the agent triage it,
-generate a Foundry proof-of-concept, and run that PoC live. The report is whatever `forge test`
-actually says — a failing PoC yields `NOT CONFIRMED`, never a faked pass.
+Local demo app for SLAY HACKS 2026. Two ways in:
+
+1. **Demo contracts** — pick one of three seeded Solidity contracts, watch the agent triage it,
+   generate a Foundry proof-of-concept, and run that PoC live. The report is whatever
+   `forge test` actually says — a failing PoC yields `NOT CONFIRMED`, never a faked pass.
+2. **Repo intake** — paste a public GitHub URL; the agent shallow-clones it, maps every `.sol`
+   file, and runs a deterministic 10-gate heuristic screen. No LLM is called for repo intake.
 
 ## Honest ceiling
 
 AuditAgent proves the **triage → PoC → proof loop on known vulnerability classes**.
-It does **not** find novel 0-days in audited production code. The demo contract is intentionally
-vulnerable and the recorded exploit trace is the ground truth for a clean, offline run.
+It does **not** find novel 0-days in audited production code. Each demo contract is intentionally
+vulnerable and its recorded exploit trace is the ground truth for a clean, offline run.
 
-## What it does
+Repo intake is a **heuristic screen, not a vulnerability finding**. Every triage report carries:
 
-1. Loads the target contract.
-2. Runs a 10-gate triage screen (deterministic for the seeded demo).
-3. Selects the attack surface (here: reentrancy in `withdraw()`).
-4. Generates the PoC — with your BYOK key it asks an OpenAI-compatible model; without one it uses
-   the recorded exploit trace in demo mode.
-5. Writes the PoC to `foundry/test/ReentrancyPoC.t.sol`.
-6. Runs `forge test` and streams the result.
-7. Emits a report with verdict, severity, impact, exploit path, PoC source, raw forge output and a fix.
+> Heuristic screen only — not a vulnerability finding. Run a demo contract to see the full
+> triage → PoC → proof loop.
 
-## Demo contract
+## Demo contracts
 
-`foundry/src/VulnerableBank.sol` (Solidity `^0.8.20`):
+All three are `^0.8.20`, use plain `assert()` and import **no `forge-std`**, so `forge test` runs
+offline with zero installs. Each PoC runs in isolation with `--match-test`, so one contract's
+result can never change another's verdict.
 
-- `deposit()` payable credits `balances[msg.sender]`.
-- `withdraw()` sends the full balance with a low-level `call` **before** zeroing the balance —
-  classic reentrancy.
+### 1. Reentrancy — `reentrancy`
 
-`foundry/test/ReentrancyPoC.t.sol` deploys a 10-ether-funded bank, has an `Attacker` deposit 1 ether
-and re-enter `withdraw()` from `receive()` until the bank is drained, then asserts the attacker walked
-away with more than it put in and the bank balance is 0. It uses plain `assert()` with **no `forge-std`
-import**, so `forge test` works offline with zero installs.
+- `foundry/src/VulnerableBank.sol`: `deposit()` credits `balances[msg.sender]`; `withdraw()` sends
+  the full balance with a low-level `call` **before** zeroing the balance — classic reentrancy.
+- `foundry/test/ReentrancyPoC.t.sol`, test `testReentrancyDrainsBank()`: a 10-ether-funded bank, an
+  `Attacker` deposits 1 ether and re-enters `withdraw()` from `receive()` until drained.
+- Proves: recursive withdrawal lets the attacker walk away with more than it deposited.
+
+### 2. Missing access control — `access-control`
+
+- `foundry/src/AccessVault.sol`: constructor sets `owner`, `deposit()` is payable, and the privileged
+  `drain()` sends the whole balance to `msg.sender` with **no `onlyOwner` and no `require`** — the
+  missing check is commented in the source.
+- `foundry/test/AccessControlPoC.t.sol`, test `testNonOwnerDrainsVault()`: a vault funded with
+  10 ether of deposits is drained by a non-owner attacker contract.
+- Proves: any address can take every depositor's funds from a privileged-but-unprotected function.
+
+### 3. Unchecked low-level call — `unchecked-call`
+
+- `foundry/src/UncheckedPayout.sol`: `pay(recipient)` zeroes the sender's balance, performs
+  `recipient.call{value: amount}("")` while **ignoring the returned bool** (no `require`, no branch),
+  then sets `paid[recipient] = true` regardless of the outcome.
+- `foundry/test/UncheckedCallPoC.t.sol`, test `testUncheckedCallLosesFunds()`: the recipient's
+  `receive()` always reverts; the test asserts the recipient received **0 ETH** *and* the payout is
+  recorded as done (`paid[recipient] == true`, sender balance zeroed) — the proof of silent failure.
+- Proves: a failed transfer is treated as success and the funds are lost.
+
+## Repo intake
+
+### How it works
+
+`POST /api/repo-audit` streams over SSE:
+
+1. **Validating URL** — accepts only `https://github.com/<owner>/<repo>`, with an optional
+   trailing `.git`, trailing slash, or `/tree/<branch>/...` path (stripped to the repo root).
+   Everything else (other hosts, `ssh://`, `http://`, credentials, query strings, weird paths)
+   is rejected before any network activity.
+2. **Cloning** — `git clone --depth 1 https://github.com/<owner>/<repo>.git` into a fresh
+   directory created with `fs.mkdtemp(os.tmpdir(), 'audit-agent-')`. The URL is passed as an
+   `execFile` argv element — never through a shell. 60s timeout, killed on expiry.
+3. **Mapping contracts** — recursive walk for `*.sol`, skipping `.git`, `node_modules`, `lib/`,
+   `out/`, `cache/`. Capped at 200 files (truncation is noted in the report). Reports relative
+   path, line count, and `contract` / `interface` / `library` names per file.
+4. **Running the 10-gate screen** — deterministic heuristics (below).
+5. **Done** — a `triage` event carries the report:
+   `{ repo, files, totalFiles, totalLoc, contractNames, gates, topSurface, note }`.
+
+The temp clone directory is always removed in a `finally` (best-effort). The clone target is the
+OS temp dir only — never inside `app-src` and never inside a git checkout.
+
+### The 10 gates
+
+| # | Gate | Pass | Warn | Fail |
+|---|------|------|------|------|
+| 1 | `has-sol-files` | any `.sol` files | — | 0 files |
+| 2 | `solc-version-pinned` | any exact pinned pragma (`0.x.y` / `=0.x.y`) | only ranges | — |
+| 3 | `has-tests` | `test/` dir or `*.t.sol` present | none found | — |
+| 4 | `known-libraries` | `@openzeppelin/` or `forge-std/` imports | none (informational) | — |
+| 5 | `external-calls` | no `.call{` / `.call(` | any found (count + first file) | — |
+| 6 | `low-level-calls` | none | `.call` / `.delegatecall` / `.staticcall` present | — |
+| 7 | `delegatecall-present` | no `delegatecall` | — | `delegatecall` present (highest-risk surface) |
+| 8 | `upgradeable-proxy` | no proxy pattern | `Proxy` / `upgradeTo` / `UUPS` / `TransparentUpgradeableProxy` | — |
+| 9 | `assembly-or-selfdestruct` | none | `assembly` or `selfdestruct` | — |
+| 10 | `size-complexity` | `totalLoc <= 5000` | `> 5000` (triage only — too big for a full single-pass review) | — |
+
+`topSurface` then picks, in priority order: `delegatecall` present → a file with `.call{value` →
+any low-level call → largest contract file.
+
+### Repo intake limits
+
+- **Public GitHub repos only.** Private repos, authentication and non-GitHub hosts are rejected.
+- **Shallow clone** (`--depth 1`): no history, only the default branch tip.
+- **Temp dir cleaned up** after every run; nothing is persisted.
+- **Heuristic, not a vuln scanner:** the gates flag surfaces worth reading, not confirmed bugs.
+- **Repo intake does not call the LLM.** `llmApiKey` / `llmBaseUrl` are accepted in the request
+  body for forward-compatibility but are unused.
 
 ## Setup
 
 - Node 24+
-- Foundry 1.9.0 (`forge` on `PATH`, or `FORGE_BIN`, or at `~/.foundry/bin/forge`)
-- Optional: an OpenAI-compatible API key for LLM-generated PoCs (BYOK)
+- Foundry 1.9.0 (`forge` on `PATH`, or `FORGE_BIN`, or at `~/.foundry/bin/forge`) — only needed for
+  the demo-contract PoC loop, not for repo intake
+- `git` on `PATH` — only needed for repo intake
+- Optional: an OpenAI-compatible API key for LLM-generated demo PoCs (BYOK)
 
 No dependencies to install — the server uses Node's built-in `http` and `fetch`.
 
@@ -60,14 +130,31 @@ npm run test:forge   # cd foundry && forge test
 
 ## API
 
-- `GET /api/demo-contracts` — seeded contract list (`reentrancy` available, two Day 2 entries).
-- `POST /api/audit` — SSE stream. Body: `{ "contractId": "reentrancy", "llmApiKey": "...", "llmBaseUrl": "..." }`.
-  Streams `step` events, then a final `report` event.
+- `GET /api/demo-contracts` — seeded contract list; all three are `available`:
+  `reentrancy`, `access-control`, `unchecked-call`.
+- `POST /api/audit` — SSE stream. Body:
+  `{ "contractId": "reentrancy" | "access-control" | "unchecked-call", "llmApiKey": "...", "llmBaseUrl": "..." }`.
+  Unknown ids are rejected with HTTP 400. Streams `step` events, then a final `report` event. The
+  report includes `pocPath` (the audited test file, e.g. `foundry/test/AccessControlPoC.t.sol`).
+- `POST /api/repo-audit` — SSE stream. Body:
+  `{ "repoUrl": "https://github.com/<owner>/<repo>" }`. Invalid URLs are rejected with HTTP 400
+  before cloning. Streams `step` events, then a final `triage` event; errors arrive as an `error`
+  event. Repo triage never calls the LLM.
 
-Keys are kept in memory for the duration of one request only — never logged and never written to disk.
+Both endpoints share the same 16KB request body limit. Keys are kept in memory for the duration of
+one request only — never logged and never written to disk.
+
+## Screenshots
+
+_Screenshots will be added after the SLAY HACKS 2026 demo run._
+
+- Demo contract audit (triage → PoC → proof)
+- Repo intake triage report (10-gate table + top surface)
 
 ## Limitations
 
-- One contract, one vulnerability class. Access control and unchecked-call demos are Day 2.
-- Repo intake (pointing at a GitHub repo) is Day 2; the input is disabled.
+- Repo intake performs a heuristic screen only, not automated vulnerability discovery, and does
+  not generate or run PoCs against the cloned repo.
+- Demo PoCs are scoped to the three seeded contracts; repo intake and the PoC loop are not yet
+  joined end-to-end.
 - Triage is deterministic for the seeded demo, not a general static analyzer.

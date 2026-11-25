@@ -30,12 +30,6 @@
             <p class="muted" id="contracts-loading">Loading demo contracts&hellip;</p>
           </div>
 
-          <label class="field" for="repo-url">
-            <span class="field-label">Repository URL</span>
-            <input id="repo-url" type="url" placeholder="https://github.com/org/repo" disabled />
-            <span class="hint">repo intake — Day 2</span>
-          </label>
-
           <fieldset class="byok">
             <legend>Bring your own key <span class="optional">(optional)</span></legend>
             <label class="field" for="llm-key">
@@ -62,6 +56,52 @@
         </section>
       </main>
 
+      <section class="panel repo-intake" aria-labelledby="repo-title">
+        <div class="report-head">
+          <h2 id="repo-title">Repo intake</h2>
+          <span class="tag later">10-gate heuristic</span>
+        </div>
+        <p class="hint">
+          Paste a public GitHub repository URL. AuditAgent shallow-clones it into a temp dir,
+          maps every <code>.sol</code> file, and runs a deterministic 10-gate triage screen.
+          The temp clone is deleted afterwards.
+        </p>
+        <div class="repo-controls">
+          <input id="repo-url" type="url" autocomplete="off" spellcheck="false"
+                 placeholder="https://github.com/owner/repo" aria-label="GitHub repository URL" />
+          <button id="repo-run" class="run" type="button">Triage repo</button>
+        </div>
+        <p class="hint" id="repo-hint">Public repos only. Shallow clone, cleaned up automatically.</p>
+
+        <div class="repo-results" id="repo-results" hidden>
+          <div class="repo-summary">
+            <div>
+              <span class="repo-name" id="repo-name"></span>
+              <span class="repo-stats" id="repo-stats"></span>
+            </div>
+            <div class="repo-truncated" id="repo-truncated" hidden></div>
+          </div>
+
+          <h4>Contracts found</h4>
+          <ul class="contract-names" id="repo-contract-names"></ul>
+
+          <h4>10-gate screen</h4>
+          <div class="table-wrap">
+            <table class="gates-table">
+              <thead>
+                <tr><th>Gate</th><th>Status</th><th>Evidence</th></tr>
+              </thead>
+              <tbody id="repo-gates"></tbody>
+            </table>
+          </div>
+
+          <h4>Top surface</h4>
+          <div class="surface-box" id="repo-surface"></div>
+
+          <p class="honesty" id="repo-note"></p>
+        </div>
+      </section>
+
       <section class="panel report" id="report" aria-labelledby="report-title" hidden>
         <div class="report-head">
           <h2 id="report-title">Report</h2>
@@ -83,7 +123,7 @@
           </div>
         </div>
 
-        <h4>PoC <span class="path-note" id="poc-path">foundry/test/ReentrancyPoC.t.sol</span></h4>
+        <h4>PoC <span class="path-note" id="poc-path"></span></h4>
         <pre class="code"><code id="poc-code"></code></pre>
 
         <h4>Forge output</h4>
